@@ -54,7 +54,17 @@ Verbose mode with extra info:
 python3 irq_affinity_viewer.py --verbose --irq 12
 ```
 
+Output in JSON format:
+```bash
+python3 irq_affinity_viewer.py --json
+python3 irq_affinity_viewer.py --json --irq 12
+python3 irq_affinity_viewer.py --json --summary
+python3 irq_affinity_viewer.py --json --name eth
+```
+
 ## Output format
+
+### Text output
 
 Each IRQ shows:
 - IRQ number and device name
@@ -70,6 +80,48 @@ IRQ 48: eth0-TxRx-0
 IRQ 49: eth0-TxRx-1
   Affinity: 1
   CPUs: [1]
+```
+
+### JSON output
+
+JSON output includes structured data suitable for scripting or integration:
+
+```json
+{
+  "irqs": [
+    {
+      "irq": 48,
+      "name": "eth0-TxRx-0",
+      "affinity": [0],
+      "affinity_readable": "0"
+    },
+    {
+      "irq": 49,
+      "name": "eth0-TxRx-1",
+      "affinity": [1],
+      "affinity_readable": "1"
+    }
+  ],
+  "count": 2
+}
+```
+
+Summary JSON:
+```json
+{
+  "total_irqs": 256,
+  "total_cpus": 8,
+  "distribution": {
+    "0": 32,
+    "1": 32,
+    "2": 32,
+    "3": 32,
+    "4": 32,
+    "5": 32,
+    "6": 32,
+    "7": 32
+  }
+}
 ```
 
 ## Notes

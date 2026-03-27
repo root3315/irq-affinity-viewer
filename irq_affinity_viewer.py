@@ -4,11 +4,12 @@ irq-affinity-viewer: Tool to check IRQ affinity settings on Linux.
 Displays which CPUs are assigned to handle specific hardware interrupts.
 """
 
+import json
 import os
 import sys
 import argparse
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 
 PROC_IRQ_PATH = "/proc/irq"
@@ -30,7 +31,7 @@ def hex_to_cpu_set(hex_mask: str, cpu_count: int) -> Set[int]:
         mask = int(hex_mask, 16)
     except ValueError:
         return set()
-    
+
     cpus = set()
     for cpu in range(cpu_count):
         if mask & (1 << cpu):
@@ -42,7 +43,7 @@ def parse_affinity_list(affinity_str: str) -> Set[int]:
     """Parse CPU list format like '0-3,5,7-8' into a set of CPU numbers."""
     cpus = set()
     parts = affinity_str.strip().split(",")
-    
+
     for part in parts:
         part = part.strip()
         if "-" in part:
@@ -58,17 +59,17 @@ def parse_affinity_list(affinity_str: str) -> Set[int]:
                 cpus.add(int(part))
             except ValueError:
                 continue
-    
+
     return cpus
 
 
 def get_irq_affinity(irq_num: int, cpu_count: int) -> Optional[Set[int]]:
     """Get the CPU affinity for a specific IRQ number."""
     irq_path = Path(PROC_IRQ_PATH) / str(irq_num)
-    
+
     affinity_list_path = irq_path / "smp_affinity_list"
     affinity_path = irq_path / "smp_affinity"
-    
+
     if affinity_list_path.exists():
         try:
             with open(affinity_list_path, "r") as f:
@@ -76,7 +77,7 @@ def get_irq_affinity(irq_num: int, cpu_count: int) -> Optional[Set[int]]:
                 return parse_affinity_list(affinity_str)
         except (FileNotFoundError, PermissionError, ValueError):
             pass
-    
+
     if affinity_path.exists():
         try:
             with open(affinity_path, "r") as f:
@@ -84,7 +85,7 @@ def get_irq_affinity(irq_num: int, cpu_count: int) -> Optional[Set[int]]:
                 return hex_to_cpu_set(hex_mask, cpu_count)
         except (FileNotFoundError, PermissionError, ValueError):
             pass
-    
+
     return None
 
 
@@ -123,7 +124,7 @@ def get_irq_type(irq_num: int) -> str:
     """Get the trigger type for an IRQ."""
     irq_path = Path(PROC_IRQ_PATH) / str(irq_num)
     type_path = irq_path / "type"
-    
+
     type_map = {
         "0": "none",
         "1": "edge-rising",
@@ -132,7 +133,7 @@ def get_irq_type(irq_num: int) -> str:
         "4": "edge-falling",
         "8": "level-low",
     }
-    
+
     try:
         with open(type_path, "r") as f:
             type_val = f.read().strip()
@@ -145,15 +146,15 @@ def format_cpu_set(cpus: Set[int], cpu_count: int) -> str:
     """Format a CPU set as a readable string."""
     if not cpus:
         return "none"
-    
+
     if cpus == set(range(cpu_count)):
         return "all"
-    
+
     sorted_cpus = sorted(cpus)
     ranges = []
     start = sorted_cpus[0]
     end = sorted_cpus[0]
-    
+
     for cpu in sorted_cpus[1:]:
         if cpu == end + 1:
             end = cpu
@@ -164,43 +165,60 @@ def format_cpu_set(cpus: Set[int], cpu_count: int) -> str:
                 ranges.append(f"{start}-{end}")
             start = cpu
             end = cpu
-    
+
     if start == end:
         ranges.append(str(start))
     else:
         ranges.append(f"{start}-{end}")
-    
+
     return ",".join(ranges)
 
 
-def display_irq_info(irq_num: int, cpu_count: int, verbose: bool = False) -> None:
-    """Display detailed information about a specific IRQ."""
+def build_irq_info(irq_num: int, cpu_count: int, verbose: bool = False) -> Dict[str, Any]:
+    """Build a dictionary with IRQ information."""
     affinity = get_irq_affinity(irq_num, cpu_count)
     name = get_irq_name(irq_num)
-    
-    print(f"IRQ {irq_num}: {name}")
-    
-    if affinity is not None:
-        cpu_str = format_cpu_set(affinity, cpu_count)
-        print(f"  Affinity: {cpu_str}")
-        print(f"  CPUs: {sorted(affinity)}")
-    else:
-        print(f"  Affinity: unable to read")
-    
+
+    info: Dict[str, Any] = {
+        "irq": irq_num,
+        "name": name,
+        "affinity": sorted(affinity) if affinity else None,
+        "affinity_readable": format_cpu_set(affinity, cpu_count) if affinity else "unable to read",
+    }
+
     if verbose:
-        irq_type = get_irq_type(irq_num)
-        print(f"  Type: {irq_type}")
-        
+        info["type"] = get_irq_type(irq_num)
+
         irq_path = Path(PROC_IRQ_PATH) / str(irq_num)
         spurious_path = irq_path / "spurious_count"
         if spurious_path.exists():
             try:
                 with open(spurious_path, "r") as f:
                     spurious = f.read().strip()
-                    print(f"  Spurious count: {spurious}")
-            except (FileNotFoundError, PermissionError):
+                    info["spurious_count"] = int(spurious)
+            except (FileNotFoundError, PermissionError, ValueError):
                 pass
-    
+
+    return info
+
+
+def display_irq_info(irq_num: int, cpu_count: int, verbose: bool = False) -> None:
+    """Display detailed information about a specific IRQ."""
+    info = build_irq_info(irq_num, cpu_count, verbose)
+
+    print(f"IRQ {info['irq']}: {info['name']}")
+
+    if info['affinity'] is not None:
+        print(f"  Affinity: {info['affinity_readable']}")
+        print(f"  CPUs: {info['affinity']}")
+    else:
+        print(f"  Affinity: unable to read")
+
+    if verbose:
+        print(f"  Type: {info['type']}")
+        if "spurious_count" in info:
+            print(f"  Spurious count: {info['spurious_count']}")
+
     print()
 
 
@@ -208,13 +226,13 @@ def search_irqs_by_name(pattern: str, cpu_count: int) -> None:
     """Search and display IRQs matching a name pattern."""
     irq_nums = list_all_irqs()
     found = False
-    
+
     for irq_num in irq_nums:
         name = get_irq_name(irq_num)
         if pattern.lower() in name.lower():
             display_irq_info(irq_num, cpu_count)
             found = True
-    
+
     if not found:
         print(f"No IRQs found matching '{pattern}'")
 
@@ -224,7 +242,7 @@ def show_summary(cpu_count: int) -> None:
     irq_nums = list_all_irqs()
     cpu_irq_count: Dict[int, int] = {cpu: 0 for cpu in range(cpu_count)}
     total = 0
-    
+
     for irq_num in irq_nums:
         affinity = get_irq_affinity(irq_num, cpu_count)
         if affinity:
@@ -232,19 +250,45 @@ def show_summary(cpu_count: int) -> None:
                 if cpu in cpu_irq_count:
                     cpu_irq_count[cpu] += 1
                     total += 1
-    
+
     print("IRQ Distribution Summary")
     print("=" * 40)
     print(f"Total IRQs: {len(irq_nums)}")
     print(f"Total CPUs: {cpu_count}")
     print()
-    
+
     for cpu in sorted(cpu_irq_count.keys()):
         count = cpu_irq_count[cpu]
         bar = "#" * min(count, 50)
         print(f"CPU {cpu:3d}: {count:4d} IRQs {bar}")
-    
+
     print()
+
+
+def build_summary_data(cpu_count: int) -> Dict[str, Any]:
+    """Build summary data as a dictionary."""
+    irq_nums = list_all_irqs()
+    cpu_irq_count: Dict[int, int] = {cpu: 0 for cpu in range(cpu_count)}
+    total = 0
+
+    for irq_num in irq_nums:
+        affinity = get_irq_affinity(irq_num, cpu_count)
+        if affinity:
+            for cpu in affinity:
+                if cpu in cpu_irq_count:
+                    cpu_irq_count[cpu] += 1
+                    total += 1
+
+    return {
+        "total_irqs": len(irq_nums),
+        "total_cpus": cpu_count,
+        "distribution": {str(cpu): count for cpu, count in sorted(cpu_irq_count.items())},
+    }
+
+
+def output_json(data: Any, indent: int = 2) -> None:
+    """Output data as JSON to stdout."""
+    print(json.dumps(data, indent=indent))
 
 
 def main() -> int:
@@ -258,9 +302,12 @@ Examples:
   %(prog)s -i 12              Show info for specific IRQ
   %(prog)s -n eth             Search IRQs by name pattern
   %(prog)s -v -i 12           Verbose output for specific IRQ
+  %(prog)s --json             Output in JSON format
+  %(prog)s --json -i 12       Output specific IRQ as JSON
+  %(prog)s --json -s          Output summary as JSON
         """
     )
-    
+
     parser.add_argument(
         "-i", "--irq",
         type=int,
@@ -281,29 +328,54 @@ Examples:
         action="store_true",
         help="Show verbose output"
     )
-    
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output in JSON format"
+    )
+
     args = parser.parse_args()
     cpu_count = get_cpu_count()
-    
-    if args.irq is not None:
-        display_irq_info(args.irq, cpu_count, args.verbose)
-    elif args.name:
-        search_irqs_by_name(args.name, cpu_count)
-    elif args.summary:
-        show_summary(cpu_count)
+
+    if args.json:
+        if args.irq is not None:
+            info = build_irq_info(args.irq, cpu_count, args.verbose)
+            output_json(info)
+        elif args.name:
+            irq_nums = list_all_irqs()
+            results = []
+            for irq_num in irq_nums:
+                name = get_irq_name(irq_num)
+                if args.name.lower() in name.lower():
+                    results.append(build_irq_info(irq_num, cpu_count, args.verbose))
+            output_json({"irqs": results, "count": len(results)})
+        elif args.summary:
+            summary = build_summary_data(cpu_count)
+            output_json(summary)
+        else:
+            irq_nums = list_all_irqs()
+            results = [build_irq_info(irq_num, cpu_count, args.verbose) for irq_num in irq_nums]
+            output_json({"irqs": results, "count": len(results)})
     else:
-        irq_nums = list_all_irqs()
-        if not irq_nums:
-            print("No IRQs found or unable to access /proc/irq")
-            return 1
-        
-        print(f"Found {len(irq_nums)} IRQs on {cpu_count} CPU(s)")
-        print("=" * 50)
-        print()
-        
-        for irq_num in irq_nums:
-            display_irq_info(irq_num, cpu_count, args.verbose)
-    
+        if args.irq is not None:
+            display_irq_info(args.irq, cpu_count, args.verbose)
+        elif args.name:
+            search_irqs_by_name(args.name, cpu_count)
+        elif args.summary:
+            show_summary(cpu_count)
+        else:
+            irq_nums = list_all_irqs()
+            if not irq_nums:
+                print("No IRQs found or unable to access /proc/irq")
+                return 1
+
+            print(f"Found {len(irq_nums)} IRQs on {cpu_count} CPU(s)")
+            print("=" * 50)
+            print()
+
+            for irq_num in irq_nums:
+                display_irq_info(irq_num, cpu_count, args.verbose)
+
     return 0
 
 
